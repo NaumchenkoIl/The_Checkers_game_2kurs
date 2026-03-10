@@ -66,7 +66,7 @@ def format_response(status: int = 0, error: Optional[str] = None, data: Optional
     }
 
 class CheckersGame:
-    def __init__(self):
+    def __init__(self, mode='classic'):
         self.board = self.init_board()  # инициализируем игровую доску
         self.current_turn = WHITE  # белые начинают первыми (в процессе изменить на выбор: белые, черные, рандом)
         self.must_continue = False  # нужно ли продолжать рубить
@@ -77,6 +77,7 @@ class CheckersGame:
         self.eaten_black_pieces = []  # список съеденных чёрных шашек
         self.last_move_by = None  # Кто сделал последний ход
         self.game_ended = False
+        self.mode = mode  # режим игры: 'classic' или 'giveaway' (поддавки)
 
     def init_board(self):  # стартовое положение шашек
         board = [[EMPTY] * BOARD_SIZE for _ in range(BOARD_SIZE)]
@@ -106,6 +107,106 @@ class CheckersGame:
             self.board[y][x] = WHITE_KING
         elif self.board[y][x] == BLACK and y == BOARD_SIZE - 1:
             self.board[y][x] = BLACK_KING
+
+    def _is_opponent(self, piece, my_piece):#проверяет, является ли фигура противником
+        if my_piece in [WHITE, WHITE_KING]:
+            return piece in [BLACK, BLACK_KING]
+        else:
+            return piece in [WHITE, WHITE_KING]
+
+    def _can_capture_from(self, x, y):#поверяет, может ли фигура в (x,y) выполнить взятие
+        piece = self.board[y][x]
+        if piece == EMPTY:
+            return False
+        
+        my_color = WHITE if piece in [WHITE, WHITE_KING] else BLACK
+        
+        if piece in [WHITE_KING, BLACK_KING]:# проверка для дамки
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+            for dx, dy in directions:
+                found_enemy = False
+                for step in range(1, BOARD_SIZE):
+                    check_x = x + step * dx
+                    check_y = y + step * dy
+                    if not (0 <= check_x < BOARD_SIZE and 0 <= check_y < BOARD_SIZE):
+                        break
+                    
+                    cell = self.board[check_y][check_x]
+                    if cell == EMPTY:
+                        if found_enemy:# проверяем, можем ли мы приземлиться дальше
+                            for landing_step in range(step + 1, BOARD_SIZE):
+                                landing_x = x + landing_step * dx
+                                landing_y = y + landing_step * dy
+                                if not (0 <= landing_x < BOARD_SIZE and 0 <= landing_y < BOARD_SIZE):
+                                    break
+                                if self.board[landing_y][landing_x] == EMPTY:
+                                    return True
+                            break
+                    elif self._is_opponent(cell, piece):
+                        if found_enemy:
+                            break
+                        found_enemy = True
+                    else:
+                        break
+        else:# проверка для простой шашки
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+            for dx, dy in directions:
+                mid_x, mid_y = x + dx, y + dy
+                landing_x, landing_y = x + 2*dx, y + 2*dy
+                
+                if (0 <= landing_x < BOARD_SIZE and 0 <= landing_y < BOARD_SIZE and
+                    0 <= mid_x < BOARD_SIZE and 0 <= mid_y < BOARD_SIZE):
+                    if (self._is_opponent(self.board[mid_y][mid_x], piece) and 
+                        self.board[landing_y][landing_x] == EMPTY):
+                        return True
+        return False
+
+    def _can_move_simple_from(self, x, y):# проверяет, может ли фигура в (x,y) сделать тихий ход
+        piece = self.board[y][x]
+        if piece == EMPTY:
+            return False
+        
+        if piece in [WHITE_KING, BLACK_KING]:# для дамки
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+            for dx, dy in directions:
+                for step in range(1, BOARD_SIZE):
+                    new_x, new_y = x + step * dx, y + step * dy
+                    if not (0 <= new_x < BOARD_SIZE and 0 <= new_y < BOARD_SIZE):
+                        break
+                    if self.board[new_y][new_x] == EMPTY:
+                        return True
+                    break
+        else:# для простой шашки
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)] if piece in [WHITE_KING, BLACK_KING] else [
+                (-1, -1), (1, -1)] if piece == WHITE else [(-1, 1), (1, 1)]
+            
+            for dx, dy in directions:
+                new_x, new_y = x + dx, y + dy
+                if (0 <= new_x < BOARD_SIZE and 0 <= new_y < BOARD_SIZE and 
+                    self.board[new_y][new_x] == EMPTY):
+                    return True
+        return False
+
+    def _has_moves(self, color):# прроверяет, есть ли у игрока цвета color какие-либо ходы
+        for y in range(BOARD_SIZE): # сначала проверяем наличие взятий (они обязательны)
+            for x in range(BOARD_SIZE):
+                piece = self.board[y][x]
+                if piece != EMPTY:
+                    if (color == WHITE and piece in [WHITE, WHITE_KING]) or \
+                       (color == BLACK and piece in [BLACK, BLACK_KING]):
+                        if self._can_capture_from(x, y):
+                            return True
+        
+        # если взятий нет, проверяем простые ходы
+        for y in range(BOARD_SIZE):
+            for x in range(BOARD_SIZE):
+                piece = self.board[y][x]
+                if piece != EMPTY:
+                    if (color == WHITE and piece in [WHITE, WHITE_KING]) or \
+                       (color == BLACK and piece in [BLACK, BLACK_KING]):
+                        if self._can_move_simple_from(x, y):
+                            return True
+        return False
 
     def is_valid_move(self, move: Move, player: str) -> bool:  # проверка допустимости хода
         if self.game_ended:
@@ -266,7 +367,7 @@ class CheckersGame:
                         elif captured_piece in [BLACK, BLACK_KING]:
                             self.eaten_black_pieces.append(captured_piece)
                         print(f"Captured piece {captured_piece} at ({mid_x},{mid_y})")
-                        break  # цдаляем только одну шашку
+                        break  # удаляем только одну шашку
 
             self.promote_to_king(tx, ty)
 
@@ -290,52 +391,54 @@ class CheckersGame:
 
         return winner
 
-    def can_continue_capture(self, x, y):  # проверка возможности продолжения взятия
+    def can_continue_capture(self, x, y):
         piece = self.board[y][x]
         if piece not in [WHITE_KING, BLACK_KING]:
             return any(
                 self.is_valid_move(Move(sequence=[(x, y), (x + dx * 2, y + dy * 2)]),
-                                   self.white_name if self.current_turn == WHITE else self.black_name)
+                                self.white_name if self.current_turn == WHITE else self.black_name)
                 for dx, dy in [(-1, -1), (-1, 1), (1, -1), (1, 1)]
             )
         else:
             directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
             for dx, dy in directions:
                 k = 1
-                found_enemy = False
-                while 0 <= x + k * dx < BOARD_SIZE and 0 <= y + k * dy < BOARD_SIZE:
+                while True:
                     check_x = x + k * dx
                     check_y = y + k * dy
-                    if self.board[check_y][check_x] != EMPTY:
-                        if (
-                            (self.current_turn == WHITE and self.board[check_y][check_x] in [BLACK, BLACK_KING]) or
-                            (self.current_turn == BLACK and self.board[check_y][check_x] in [WHITE, WHITE_KING])
-                        ):
-                            if found_enemy:
-                                break
-                            found_enemy = True
-                        else:
-                            break
-                    if found_enemy:
-                        m = k + 1
-                        while 0 <= x + m * dx < BOARD_SIZE and 0 <= y + m * dy < BOARD_SIZE:
-                            if self.board[y + m * dy][x + m * dx] == EMPTY:
-                                print(f"Can continue capture from ({x},{y}) to ({x + m * dx},{y + m * dy})")
-                                return True
-                            m += 1
+                    if not (0 <= check_x < BOARD_SIZE and 0 <= check_y < BOARD_SIZE):
                         break
+                    if self.board[check_y][check_x] != EMPTY:
+                        if self._is_opponent(self.board[check_y][check_x], piece):
+                            jump_x = x + (k + 1) * dx
+                            jump_y = y + (k + 1) * dy
+                            if (0 <= jump_x < BOARD_SIZE and 0 <= jump_y < BOARD_SIZE and
+                                    self.board[jump_y][jump_x] == EMPTY):
+                                return True
+                        break  # любая фигура на пути блокирует направление
                     k += 1
-            print(f"No further captures from ({x},{y})")
             return False
 
-    def check_end_game(self):  # проверка окончания игры
+    def check_end_game(self):
         white_pieces = sum(row.count(WHITE) + row.count(WHITE_KING) for row in self.board)
         black_pieces = sum(row.count(BLACK) + row.count(BLACK_KING) for row in self.board)
-        if white_pieces == 0:
-            return "BLACK"
-        elif black_pieces == 0:
-            return "WHITE"
-        return None
+        
+        if self.mode == 'giveaway':
+            if white_pieces == 0: # в поддавках побеждает тот, у кого не осталось шашек
+                return "WHITE"
+            if black_pieces == 0:
+                return "BLACK"
+            if not self._has_moves(self.current_turn): # если шашки есть, проверяем, есть ли ходы у текущего игрока
+                return "BLACK" if self.current_turn == WHITE else "WHITE"
+            return None
+        else:  # классический режим
+            if white_pieces == 0:
+                return "BLACK"
+            if black_pieces == 0:
+                return "WHITE"
+            if not self._has_moves(self.current_turn):
+                return "BLACK" if self.current_turn == WHITE else "WHITE"
+            return None
 
 @sio.event
 async def connect(sid, environ, auth=None):
@@ -387,12 +490,13 @@ async def disconnect(sid):
 async def create_room(sid, data):
     username = data.get('username')
     token = data.get('token')
-    print(f"Create room request from {username} with token {token[:10]}...")
+    mode = data.get('mode', 'classic')  # получаем режим игры, по умолчанию классический
+    print(f"Create room request from {username} with token {token[:10]}... mode: {mode}")
 
     try:
         current_user = user_manager.check_token(token)  # проверяем токен
         game_id = secrets.token_hex(8)
-        games[game_id] = CheckersGame()
+        games[game_id] = CheckersGame(mode=mode)  # передаём режим в конструктор
         games[game_id].white_name = current_user
         connections[game_id] = {'white': sid, 'black': None}
         await sio.enter_room(sid, game_id)  # добавляем белого игрока в комнату
@@ -402,7 +506,8 @@ async def create_room(sid, data):
             'game_id': game_id,
             'name': f'Комната {current_user}',
             'players': 1,
-            'status': 'waiting'
+            'status': 'waiting',
+            'mode': mode  # добавляем режим в информацию о комнате
         }, to=sid)  # отправляем уведомление создателю комнаты
         print(f"Room created event sent to sid: {sid}")
 
@@ -411,13 +516,13 @@ async def create_room(sid, data):
                 'id': gid,
                 'name': f'Комната {game.white_name}',
                 'players': 1 if not game.black_name else 2,
-                'status': 'waiting' if not game.black_name else 'playing'
+                'status': 'waiting' if not game.black_name else 'playing',
+                'mode': game.mode  # добавляем режим в список комнат
             }
             for gid, game in games.items()
             if not game.black_name and not game.game_ended
         ]
-        for conn_sid in sio.manager.get_participants('/'):
-            await sio.emit('rooms_list', {'rooms': rooms}, to=conn_sid)  # Обновляем список комнат для всех клиентов
+        await sio.emit('rooms_list', {'rooms': rooms}) # Обновляем список комнат для всех клиентов
         print(f"Broadcasted rooms list to all clients: {rooms}")
 
     except Exception as e:
@@ -462,7 +567,8 @@ async def join_game(sid, data):
             'last_moved_piece': game.last_moved_piece,
             'eaten_white_pieces': game.eaten_white_pieces,
             'eaten_black_pieces': game.eaten_black_pieces,
-            'game_ended': game.game_ended
+            'game_ended': game.game_ended,
+            'mode': game.mode  # добавляем режим игры
         }, to=sid)  # отправляем напрямую чёрному игроку
         if connections[game_id].get('white'):
             board_for_white = game.get_board('white')
@@ -479,7 +585,8 @@ async def join_game(sid, data):
                 'last_moved_piece': game.last_moved_piece,
                 'eaten_white_pieces': game.eaten_white_pieces,
                 'eaten_black_pieces': game.eaten_black_pieces,
-                'game_ended': game.game_ended
+                'game_ended': game.game_ended,
+                'mode': game.mode  # добавляем режим игры
             }, to=connections[game_id]['white'])
         await sio.emit('playerJoined', {'username': username}, room=game_id)  # уведомляем о присоединении
         print(f"Game joined event sent to room: {game_id}")
@@ -539,7 +646,8 @@ async def make_move(sid, data):
                     'eaten_black_pieces': game.eaten_black_pieces,
                     'must_continue': game.must_continue,
                     'last_moved_piece': game.last_moved_piece,
-                    'game_ended': game.game_ended
+                    'game_ended': game.game_ended,
+                    'mode': game.mode  # добавляем режим игры
                 }, to=conn_sid)  # отправляем доску с учётом перспективы каждого игрока
         print(f"Move made in game {game_id}, updated state sent to room")
         if winner:
@@ -551,7 +659,8 @@ async def make_move(sid, data):
                         'winner': winner,
                         'board': board,
                         'eaten_white_pieces': game.eaten_white_pieces,
-                        'eaten_black_pieces': game.eaten_black_pieces
+                        'eaten_black_pieces': game.eaten_black_pieces,
+                        'mode': game.mode  # добавляем режим игры
                     }, to=conn_sid)
             print(f"Game {game_id} ended, winner: {winner}, game_ended event sent")
     except HTTPException as e:
@@ -622,7 +731,8 @@ async def leave_room(sid, data):
                             'eaten_black_pieces': game.eaten_black_pieces,
                             'must_continue': game.must_continue,
                             'last_moved_piece': game.last_moved_piece,
-                            'game_ended': game.game_ended
+                            'game_ended': game.game_ended,
+                            'mode': game.mode  # добавляем режим игры
                         }, to=conn_sid)
 
         rooms = [
@@ -630,13 +740,13 @@ async def leave_room(sid, data):
                 'id': gid,
                 'name': f'Комната {game.white_name}',
                 'players': 1 if not game.black_name else 2,
-                'status': 'waiting' if not game.black_name else 'playing'
+                'status': 'waiting' if not game.black_name else 'playing',
+                'mode': game.mode  # добавляем режим в список комнат
             }
             for gid, game in games.items()
             if not game.black_name and not game.game_ended
         ]
-        for conn_sid in sio.manager.get_participants('/'):
-            await sio.emit('rooms_list', {'rooms': rooms}, to=conn_sid)  # рассылка обновленного списка комнат
+        await sio.emit('rooms_list', {'rooms': rooms})  # рассылка обновленного списка комнат
         print(f"Broadcasted rooms list to all clients: {rooms}")
     except HTTPException as e:
         await sio.emit('game_error', {'message': str(e.detail)}, to=sid)
@@ -658,7 +768,8 @@ async def get_rooms(sid, data):
                 'id': gid,
                 'name': f'Комната {game.white_name}',
                 'players': 1 if not game.black_name else 2,
-                'status': 'waiting' if not game.black_name else 'playing'
+                'status': 'waiting' if not game.black_name else 'playing',
+                'mode': game.mode  # добавляем режим в список комнат
             }
             for gid, game in games.items()
             if not game.black_name and not game.game_ended
@@ -676,7 +787,8 @@ async def get_rooms(current_user: str = Depends(token_checker)):  # получа
             "id": game_id,
             "name": f"Комната {game.white_name}",
             "players": 1 if not game.black_name else 2,
-            "status": "waiting" if not game.black_name else "playing"
+            "status": "waiting" if not game.black_name else "playing",
+            "mode": game.mode  # добавляем режим в список комнат
         }
         for game_id, game in games.items()
         if not game.black_name and not game.game_ended
@@ -714,13 +826,15 @@ async def move_get_game(game_id: str, move: Optional[Move] = None,
                             'eaten_black_pieces': game.eaten_black_pieces,
                             'must_continue': game.must_continue,
                             'last_moved_piece': game.last_moved_piece,
-                            'game_ended': game.game_ended
+                            'game_ended': game.game_ended,
+                            'mode': game.mode  # добавляем режим игры
                         }, to=conn_sid)
                         await sio.emit('game_ended', {
                             'winner': winner,
                             'board': game.get_board(color),
                             'eaten_white_pieces': game.eaten_white_pieces,
-                            'eaten_black_pieces': game.eaten_black_pieces
+                            'eaten_black_pieces': game.eaten_black_pieces,
+                            'mode': game.mode  # добавляем режим игры
                         }, to=conn_sid)
                 print(f"Game {game_id} ended via HTTP, winner: {winner}")
             else:
@@ -739,7 +853,8 @@ async def move_get_game(game_id: str, move: Optional[Move] = None,
                             'eaten_black_pieces': game.eaten_black_pieces,
                             'must_continue': game.must_continue,
                             'last_moved_piece': game.last_moved_piece,
-                            'game_ended': game.game_ended
+                            'game_ended': game.game_ended,
+                            'mode': game.mode  # добавляем режим игры
                         }, to=conn_sid)
                 print(f"Move made via HTTP in game {game_id}")
         except HTTPException as e:
@@ -756,7 +871,8 @@ async def move_get_game(game_id: str, move: Optional[Move] = None,
         "last_moved_piece": game.last_moved_piece,
         "eaten_white_pieces": game.eaten_white_pieces,
         "eaten_black_pieces": game.eaten_black_pieces,
-        "game_ended": game.game_ended
+        "game_ended": game.game_ended,
+        "mode": game.mode  # добавляем режим игры
     })
 
 @app.post("/register")

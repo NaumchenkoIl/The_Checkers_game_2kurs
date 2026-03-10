@@ -26,8 +26,8 @@ class UserManager:
         self.users = self.load_users_from_file()  # загружаем пользователей из файла
         self.smtp_server = "smtp.yandex.com"  # настраиваем smtp для яндекса
         self.smtp_port = 465  # порт для ssl
-        self.smtp_user = os.getenv("SMTP_USER", "checkers.assistant@yandex.com")  # email яндекса
-        self.smtp_password = os.getenv("SMTP_PASSWORD", "gkvutwzqwenahdza")  # пароль приложения яндекса
+        self.smtp_user = os.getenv("SMTP_USER", "IlyaNaumIlya@yandex.com")  # email яндекса
+        self.smtp_password = os.getenv("SMTP_PASSWORD", "dbkawxhtzlpcspmb")  # пароль приложения яндекса
         print(f"SMTP Config: user={self.smtp_user}, password={self.smtp_password[:4]}..., port={self.smtp_port}")  # отладка
 
     def load_users_from_file(self):  # для загрузки пользователей из файла
