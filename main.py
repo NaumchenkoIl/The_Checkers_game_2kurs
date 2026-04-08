@@ -5,6 +5,8 @@ from pydantic import BaseModel
 from AuthManager import UserManager, token_checker
 import secrets
 import socketio
+import asyncio
+from datetime import datetime, timedelta
 
 app = FastAPI()
 
@@ -78,6 +80,10 @@ class CheckersGame:
         self.last_move_by = None  # Кто сделал последний ход
         self.game_ended = False
         self.mode = mode  # режим игры: 'classic' или 'giveaway' (поддавки)
+        self.TIMEOUT_MOVE = 15 # секунд на ход
+        self.AFK_TIMEOUT = 10 # секунд на AFK
+        self.timer_task = None # asyncio.Task для таймера
+        self.move_deadline = None # datetime, когда истекает время хода
 
     def init_board(self):  # стартовое положение шашек
         board = [[EMPTY] * BOARD_SIZE for _ in range(BOARD_SIZE)]
@@ -342,6 +348,7 @@ class CheckersGame:
 
         sequence = move.sequence
         captured = False
+        turn_changed = False  # флаг для отслеживания смены хода
 
         for i in range(len(sequence) - 1):
             fx, fy = sequence[i]
@@ -379,6 +386,7 @@ class CheckersGame:
                 self.must_continue = False
                 self.last_moved_piece = None
                 self.current_turn = BLACK if self.current_turn == WHITE else WHITE
+                turn_changed = True  # ход сменился
                 print(f"Turn switched to {self.current_turn}")
 
         self.last_move_by = player
@@ -388,6 +396,8 @@ class CheckersGame:
         if winner:
             self.game_ended = True
             print(f"Game ended, winner: {winner}")
+
+        self.cancel_timer()# отменяем существующий таймер
 
         return winner
 
@@ -439,6 +449,77 @@ class CheckersGame:
             if not self._has_moves(self.current_turn):
                 return "BLACK" if self.current_turn == WHITE else "WHITE"
             return None
+ 
+    async def start_move_timer(self, sio, game_id):
+        """Запускает основной таймер на ход (15 секунд)."""
+        self.cancel_timer()
+        self.move_deadline = datetime.utcnow() + timedelta(seconds=self.TIMEOUT_MOVE)
+        
+        async def timer_loop():
+            while not self.game_ended:
+                now = datetime.utcnow()
+                remaining = (self.move_deadline - now).total_seconds()
+                if remaining <= 0:
+                    # Время вышло – запускаем AFK таймер
+                    await sio.emit('timer_update', {'seconds': 0, 'type': 'move'}, room=game_id)
+                    await sio.emit('afk_warning', {'message': 'Время на ход истекло! У вас 10 секунд, чтобы сделать ход'}, room=game_id)
+                    await self.start_afk_timer(sio, game_id)
+                    break
+                else:
+                    # отправляем оставшееся время клиентам
+                    await sio.emit('timer_update', {'seconds': remaining, 'type': 'move'}, room=game_id)
+                    await asyncio.sleep(1)
+            self.timer_task = None
+        
+        self.timer_task = asyncio.create_task(timer_loop())
+
+    async def start_afk_timer(self, sio, game_id):
+        """Запускает AFK таймер после истечения основного таймера."""
+        self.cancel_timer()
+        self.move_deadline = datetime.utcnow() + timedelta(seconds=self.AFK_TIMEOUT)
+        
+        async def afk_timer_loop():
+            while not self.game_ended:
+                now = datetime.utcnow()
+                remaining = (self.move_deadline - now).total_seconds()
+                if remaining <= 0:
+                    # AFK время вышло – победа противнику
+                    if not self.game_ended:
+                        winner = "BLACK" if self.current_turn == WHITE else "WHITE"
+                        self.game_ended = True
+                        for conn_sid, color in [(connections[game_id].get('white'), 'white'),
+                                                (connections[game_id].get('black'), 'black')]:
+                            if conn_sid:
+                                board = self.get_board(color)
+                                await sio.emit('game_ended', {
+                                    'winner': winner,
+                                    'board': board,
+                                    'eaten_white_pieces': self.eaten_white_pieces,
+                                    'eaten_black_pieces': self.eaten_black_pieces,
+                                    'mode': self.mode,
+                                    'reason': 'afk'
+                                }, to=conn_sid)
+                    break
+                else:
+                    # отправляем оставшееся время клиентам
+                    await sio.emit('timer_update', {'seconds': remaining, 'type': 'afk'}, room=game_id)
+                    await asyncio.sleep(1)
+            self.timer_task = None
+        
+        self.timer_task = asyncio.create_task(afk_timer_loop())
+
+    def start_timer(self, sio, game_id):
+        """Запускает таймер для текущего игрока (основной)."""
+        self.cancel_timer()
+        # Создаем новую задачу без asyncio.create_task внутри
+        self.timer_task = asyncio.create_task(self.start_move_timer(sio, game_id))
+
+    def cancel_timer(self):
+        """Отменяет текущий таймер."""
+        if self.timer_task and not self.timer_task.done():
+            self.timer_task.cancel()
+        self.timer_task = None
+        self.move_deadline = None
 
 @sio.event
 async def connect(sid, environ, auth=None):
@@ -529,7 +610,7 @@ async def create_room(sid, data):
         print(f"Error creating room: {str(e)}")
         await sio.emit('game_error', {'message': str(e)}, to=sid)
 
-@sio.on('join_game')
+@sio.event
 async def join_game(sid, data):
     game_id = data.get('game_id')
     token = data.get('token')  # токен для авторизации
@@ -590,6 +671,13 @@ async def join_game(sid, data):
             }, to=connections[game_id]['white'])
         await sio.emit('playerJoined', {'username': username}, room=game_id)  # уведомляем о присоединении
         print(f"Game joined event sent to room: {game_id}")
+        
+        # Если оба игрока подключены, запускаем таймер для первого игрока (белые начинают)
+        if connections[game_id].get('white') and connections[game_id].get('black'):
+            game = games[game_id]
+            game.start_timer(sio, game_id)
+            print(f"Timer started for game {game_id}, white player's turn")
+            
     except HTTPException as e:
         print(f"Join game error: {e.detail}")
         await sio.emit('game_error', {'message': str(e.detail)}, to=sid)
@@ -629,6 +717,7 @@ async def make_move(sid, data):
         print(f"Attempting move: {move.sequence} by {username}")
         winner = game.make_move(move, username)
         message = "Ход выполнен" if not winner else f"Игра окончена! Победитель: {winner}"
+        
         for conn_sid, color in [(connections[game_id].get('white'), 'white'),
                                 (connections[game_id].get('black'), 'black')]:
             if conn_sid:
@@ -650,7 +739,13 @@ async def make_move(sid, data):
                     'mode': game.mode  # добавляем режим игры
                 }, to=conn_sid)  # отправляем доску с учётом перспективы каждого игрока
         print(f"Move made in game {game_id}, updated state sent to room")
-        if winner:
+
+        if not winner and not game.game_ended and not game.must_continue:#если игра не закончена и нет обязательного продолжения взятия, перезапускаем таймер для следующего игрока
+            game.cancel_timer()  # сначала отменяем старый таймер
+            game.start_timer(sio, game_id)  # запускаем новый таймер для следующего игрока
+            print(f"Timer restarted for game {game_id}, next player's turn: {'WHITE' if game.current_turn == WHITE else 'BLACK'}")
+        elif winner:
+            game.cancel_timer()  # отменяем таймер при завершении игры
             for conn_sid, color in [(connections[game_id].get('white'), 'white'),
                                     (connections[game_id].get('black'), 'black')]:
                 if conn_sid:
@@ -874,6 +969,77 @@ async def move_get_game(game_id: str, move: Optional[Move] = None,
         "game_ended": game.game_ended,
         "mode": game.mode  # добавляем режим игры
     })
+
+@sio.on('player_activity')
+async def player_activity(sid, data):
+    """Получаем активность игрока (движение мыши, клики и т.д.)"""
+    game_id = data.get('game_id')
+    token = data.get('token')
+    
+    if not game_id or game_id not in games:
+        return
+    
+    try:
+        username = user_manager.check_token(token)
+        game = games[game_id]
+        
+    
+        current_player = game.white_name if game.current_turn == WHITE else game.black_name# проверяем, что это текущий игрок
+        
+        if username == current_player and game.timer_task and game.move_deadline:
+            remaining = (game.move_deadline - datetime.utcnow()).total_seconds()# если активность зафиксирована во время AFK таймера
+            if remaining <= game.AFK_TIMEOUT and remaining > 0:# если осталось меньше или равно AFK_TIMEOUT, значит это AFK таймер
+                game.cancel_timer()# отменяем AFK таймер и запускаем основной снова
+                await sio.emit('timer_update', {'remaining': game.TIMEOUT_MOVE, 'type': 'move'}, room=game_id)
+                await sio.emit('timer_reset', {'message': 'Активность зафиксирована, у вас снова 15 секунд'}, room=game_id)
+                game.start_timer(sio, game_id)
+                print(f"AFK timer cancelled for game {game_id}, player {username} is active")
+    except HTTPException:
+        pass
+
+@sio.on('afk_win')
+async def afk_win(sid, data):
+    """Обработчик победы по AFK"""
+    game_id = data.get('game_id')
+    winner = data.get('winner')   
+    token = data.get('token')
+    
+    if not game_id or game_id not in games:
+        return
+    
+    try:
+        username = user_manager.check_token(token)
+        game = games[game_id]
+        
+        # Проверяем, что победитель - текущий игрок
+        if game.current_turn == WHITE and winner == 'BLACK':
+            expected_player = game.white_name
+        elif game.current_turn == BLACK and winner == 'WHITE':
+            expected_player = game.black_name
+        else:
+            return
+        
+        if username == expected_player and not game.game_ended:
+            game.game_ended = True
+            game.cancel_timer()
+            
+            # Отправляем всем игрокам сообщение о победе
+            for conn_sid, color in [(connections[game_id].get('white'), 'white'),
+                                    (connections[game_id].get('black'), 'black')]:
+                if conn_sid:
+                    board = game.get_board(color)
+                    await sio.emit('game_ended', {
+                        'winner': winner,
+                        'board': board,
+                        'eaten_white_pieces': game.eaten_white_pieces,
+                        'eaten_black_pieces': game.eaten_black_pieces,
+                        'mode': game.mode,
+                        'reason': 'timeout'
+                    }, to=conn_sid)
+            print(f"Game {game_id} ended by timeout, winner: {winner}")
+    except HTTPException:
+        pass
+
 
 @app.post("/register")
 async def register(data: UserRegister):  # регистрируем пользователя
