@@ -67,10 +67,172 @@ def format_response(status: int = 0, error: Optional[str] = None, data: Optional
         "data": data or {}  # данные об игре
     }
 
+class CapturePathRequest(BaseModel):
+    game_id: str
+    piece_x: int
+    piece_y: int
+
+class CapturePathFinder:
+    """Класс для поиска всех возможных путей множественного захвата"""
+    
+    def __init__(self, board, current_turn):
+        self.board = board
+        self.current_turn = current_turn
+        self.visited = set()
+        
+    def find_all_capture_paths(self, start_x, start_y):
+        """Находит все возможные пути захвата для фигуры"""
+        piece = self.board[start_y][start_x]
+        if piece == EMPTY:
+            return []
+            
+        self.visited = set()
+        current_path = [(start_x, start_y)]
+        paths = self._find_capture_paths(start_x, start_y, current_path, piece)
+        
+        # Убираем дубликаты и пути длиной 1
+        unique_paths = []
+        for path in paths:
+            if len(path) > 1:
+                # Конвертируем в кортеж для удаления дубликатов
+                path_tuple = tuple(tuple(p) for p in path)
+                if path_tuple not in [tuple(tuple(p) for p in up) for up in unique_paths]:
+                    unique_paths.append(path)
+        
+        return unique_paths
+    
+    def _find_capture_paths(self, x, y, current_path, piece):
+        """Рекурсивно ищет все возможные пути захвата"""
+        paths = []
+        is_king = piece in [WHITE_KING, BLACK_KING]
+        is_white = piece in [WHITE, WHITE_KING]
+        
+        directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        
+        for dx, dy in directions:
+            if is_king:
+                # Для дамки: можно прыгать через врага на любом расстоянии
+                for step in range(1, BOARD_SIZE):
+                    enemy_x = x + step * dx
+                    enemy_y = y + step * dy
+                    
+                    if not (0 <= enemy_x < BOARD_SIZE and 0 <= enemy_y < BOARD_SIZE):
+                        break
+                    
+                    enemy_piece = self.board[enemy_y][enemy_x]
+                    
+                    if enemy_piece != EMPTY:
+                        # Проверяем, враг ли это
+                        if self._is_enemy(piece, enemy_piece):
+                            # Нашли врага, ищем место для приземления
+                            for land_step in range(step + 1, BOARD_SIZE):
+                                land_x = x + land_step * dx
+                                land_y = y + land_step * dy
+                                
+                                if not (0 <= land_x < BOARD_SIZE and 0 <= land_y < BOARD_SIZE):
+                                    break
+                                
+                                if self.board[land_y][land_x] == EMPTY:
+                                    if (land_x, land_y) not in current_path:
+                                        # Сохраняем состояние доски
+                                        captured_piece = enemy_piece
+                                        
+                                        # Временно удаляем врага для продолжения поиска
+                                        self.board[enemy_y][enemy_x] = EMPTY
+                                        self.board[y][x] = EMPTY
+                                        original_piece = self.board[land_y][land_x]
+                                        self.board[land_y][land_x] = piece
+                                        
+                                        new_path = current_path + [(land_x, land_y)]
+                                        
+                                        # Проверяем превращение в дамку
+                                        new_piece = piece
+                                        if is_white and land_y == 0:
+                                            new_piece = WHITE_KING
+                                        elif not is_white and land_y == BOARD_SIZE - 1:
+                                            new_piece = BLACK_KING
+                                        
+                                        # Рекурсивно ищем дальше
+                                        further_paths = self._find_capture_paths(
+                                            land_x, land_y, new_path, new_piece
+                                        )
+                                        
+                                        # Восстанавливаем доску
+                                        self.board[enemy_y][enemy_x] = captured_piece
+                                        self.board[y][x] = piece
+                                        self.board[land_y][land_x] = original_piece
+                                        
+                                        if further_paths:
+                                            paths.extend(further_paths)
+                                        else:
+                                            paths.append(new_path)
+                                        
+                                        # Для дамки можно приземляться на разных клетках
+                        break
+            else:
+                # Для простой шашки: прыгаем ровно на 2 клетки
+                enemy_x = x + dx
+                enemy_y = y + dy
+                land_x = x + 2 * dx
+                land_y = y + 2 * dy
+                
+                if (0 <= land_x < BOARD_SIZE and 0 <= land_y < BOARD_SIZE and
+                    0 <= enemy_x < BOARD_SIZE and 0 <= enemy_y < BOARD_SIZE):
+                    
+                    enemy_piece = self.board[enemy_y][enemy_x]
+                    
+                    if (enemy_piece != EMPTY and 
+                        self._is_enemy(piece, enemy_piece) and
+                        self.board[land_y][land_x] == EMPTY and
+                        (land_x, land_y) not in current_path):
+                        
+                        # Сохраняем состояние доски
+                        captured_piece = enemy_piece
+                        
+                        # Временно удаляем врага
+                        self.board[enemy_y][enemy_x] = EMPTY
+                        self.board[y][x] = EMPTY
+                        original_piece = self.board[land_y][land_x]
+                        self.board[land_y][land_x] = piece
+                        
+                        new_path = current_path + [(land_x, land_y)]
+                        
+                        # Проверяем превращение в дамку
+                        new_piece = piece
+                        if is_white and land_y == 0:
+                            new_piece = WHITE_KING
+                        elif not is_white and land_y == BOARD_SIZE - 1:
+                            new_piece = BLACK_KING
+                        
+                        # Рекурсивно ищем дальше
+                        further_paths = self._find_capture_paths(
+                            land_x, land_y, new_path, new_piece
+                        )
+                        
+                        # Восстанавливаем доску
+                        self.board[enemy_y][enemy_x] = captured_piece
+                        self.board[y][x] = piece
+                        self.board[land_y][land_x] = original_piece
+                        
+                        if further_paths:
+                            paths.extend(further_paths)
+                        else:
+                            paths.append(new_path)
+        
+        return paths
+    
+    def _is_enemy(self, piece, target):
+        """Проверяет, является ли фигура вражеской"""
+        if piece in [WHITE, WHITE_KING]:
+            return target in [BLACK, BLACK_KING]
+        else:
+            return target in [WHITE, WHITE_KING]
+
+
 class CheckersGame:
-    def __init__(self, mode='classic'):
+    def __init__(self, mode='classic', auto_capture=False):
         self.board = self.init_board()  # инициализируем игровую доску
-        self.current_turn = WHITE  # белые начинают первыми (в процессе изменить на выбор: белые, черные, рандом)
+        self.current_turn = WHITE  # белые начинают первыми
         self.must_continue = False  # нужно ли продолжать рубить
         self.last_moved_piece = None  # последняя двигающаяся шашка
         self.white_name = None  # имя игрока за белых
@@ -80,6 +242,7 @@ class CheckersGame:
         self.last_move_by = None  # Кто сделал последний ход
         self.game_ended = False
         self.mode = mode  # режим игры: 'classic' или 'giveaway' (поддавки)
+        self.auto_capture = auto_capture  # режим авто-множественного захвата
         self.TIMEOUT_MOVE = 15 # секунд на ход
         self.AFK_TIMEOUT = 10 # секунд на AFK
         self.timer_task = None # asyncio.Task для таймера
@@ -221,17 +384,17 @@ class CheckersGame:
 
         sequence = move.sequence
         captured = False
+        is_auto_capture = len(sequence) > 2  # Авто-захват если больше 2 точек
 
-        print(f"Validating move for player {player}: sequence={sequence}")
+        print(f"Validating move for player {player}: sequence={sequence}, auto_capture={is_auto_capture}")
+        
         if (self.current_turn == WHITE and player != self.white_name) or (
             self.current_turn == BLACK and player != self.black_name
         ):
-            print(
-                f"Invalid turn: current_turn={self.current_turn}, player={player}, white_name={self.white_name}, black_name={self.black_name}"
-            )
+            print(f"Invalid turn: current_turn={self.current_turn}, player={player}")
             return False
 
-        if self.must_continue and sequence[0] != self.last_moved_piece:  # проверка, что ход начинается с последней шашки, если требуется продолжение взятия
+        if self.must_continue and sequence[0] != self.last_moved_piece:
             print(f"Must continue with piece {self.last_moved_piece}, but got {sequence[0]}")
             return False
 
@@ -240,34 +403,46 @@ class CheckersGame:
             tx, ty = sequence[i + 1]
 
             if not (0 <= fx < BOARD_SIZE and 0 <= fy < BOARD_SIZE and
-                    0 <= tx < BOARD_SIZE and 0 <= ty < BOARD_SIZE):  # проверка границ
+                    0 <= tx < BOARD_SIZE and 0 <= ty < BOARD_SIZE):
                 print(f"Out of bounds: from=({fx},{fy}), to=({tx},{ty})")
                 return False
 
             piece = self.board[fy][fx]
-            print(f"Piece at ({fx},{fy}): {piece}")
+            print(f"Step {i}: piece at ({fx},{fy}) = {piece}")
+            
             if (self.current_turn == WHITE and piece not in [WHITE, WHITE_KING]) or (
                 self.current_turn == BLACK and piece not in [BLACK, BLACK_KING]
-            ):  # проверка правильной шашки
+            ):
                 print(f"Wrong piece: piece={piece}, current_turn={self.current_turn}")
                 return False
 
-            if self.board[ty][tx] != EMPTY:  # клетка куда шагаем должна быть пустой
-                print(f"Target not empty: target=({tx},{ty}), value={self.board[ty][tx]}")
-                return False
+            # Для авто-захвата: после первого шага фигура уже переместилась,
+            # но мы все еще проверяем по исходной доске.
+            # Пропускаем проверку на пустоту для промежуточных шагов авто-захвата
+            if not is_auto_capture or i == 0:
+                if self.board[ty][tx] != EMPTY:
+                    # Для авто-захвата конечная точка может быть занята только если это не последний шаг
+                    if is_auto_capture and i < len(sequence) - 2:
+                        print(f"Intermediate target not empty: target=({tx},{ty})")
+                        return False
+                    elif not is_auto_capture:
+                        print(f"Target not empty: target=({tx},{ty})")
+                        return False
 
             dx, dy = tx - fx, ty - fy
             print(f"Movement: dx={dx}, dy={dy}")
 
             if piece in [WHITE_KING, BLACK_KING]:
-                if abs(dx) != abs(dy):  # дамки могут ходить на любое расстояние по диагонали
-                    print(f"Invalid king move: not diagonal, dx={dx}, dy={dy}")
+                if abs(dx) != abs(dy):
+                    print(f"Invalid king move: not diagonal")
                     return False
+                
                 steps = abs(dx)
                 direction_x = dx // abs(dx) if dx != 0 else 0
                 direction_y = dy // abs(dy) if dy != 0 else 0
                 enemy_count = 0
                 enemy_pos = None
+                
                 for step in range(1, steps):
                     mid_x = fx + direction_x * step
                     mid_y = fy + direction_y * step
@@ -278,61 +453,65 @@ class CheckersGame:
                             self.current_turn == BLACK and self.board[mid_y][mid_x] in [WHITE, WHITE_KING]
                         ):
                             if enemy_count > 0:
-                                print(f"Multiple enemies in path at ({mid_x},{mid_y})")
+                                print(f"Multiple enemies in path")
                                 return False
                             enemy_count += 1
                             enemy_pos = (mid_x, mid_y)
                         else:
-                            print(f"Invalid path for king at ({mid_x},{mid_y}): {self.board[mid_y][mid_x]}")
+                            print(f"Invalid path for king: own piece at ({mid_x},{mid_y})")
                             return False
+                
                 if enemy_count == 1:
                     captured = True
-                    mid_x, mid_y = enemy_pos
-                    if abs(tx - mid_x) < 1 or abs(ty - mid_y) < 1:
-                        print(f"King must land after enemy: enemy=({mid_x},{mid_y}), target=({tx},{ty})")
+                elif steps == 1:
+                    # Простой ход дамкой (без захвата)
+                    if self.must_continue:
+                        print("Must capture, but tried simple move")
                         return False
-                if captured and i < len(sequence) - 2:
-                    next_fx, next_fy = tx, ty
-                    next_tx, next_ty = sequence[i + 2]
-                    next_dx, next_dy = next_tx - next_fx, next_ty - next_fy
-                    if abs(next_dx) == abs(next_dy) and abs(next_dx) >= 2:
-                        next_direction_x = next_dx // abs(next_dx) if next_dx != 0 else 0
-                        next_direction_y = next_dy // abs(next_dy) if next_dy != 0 else 0
-                        can_continue = False
-                        for j in range(1, abs(next_dx)):
-                            check_x = next_fx + next_direction_x * j
-                            check_y = next_fy + next_direction_y * j
-                            if not (0 <= check_x < BOARD_SIZE and 0 <= check_y < BOARD_SIZE):
-                                break
-                            if self.board[check_y][check_x] in ([BLACK, BLACK_KING] if self.current_turn == WHITE else [WHITE, WHITE_KING]):
-                                can_continue = True
-                                break
-                        if not can_continue:
-                            print(f"No further captures possible after ({tx},{ty})")
-                            return False
+                else:
+                    print(f"Invalid king move: no enemy and not simple move")
+                    return False
+                    
             elif abs(dx) == 2 and abs(dy) == 2:
+                # Захват простой шашкой
                 mid_x, mid_y = (fx + tx) // 2, (fy + ty) // 2
                 enemy_piece = self.board[mid_y][mid_x]
                 print(f"Checking capture: mid=({mid_x},{mid_y}), enemy_piece={enemy_piece}")
+                
                 if enemy_piece != EMPTY and (
                     (self.current_turn == WHITE and enemy_piece in [BLACK, BLACK_KING]) or
                     (self.current_turn == BLACK and enemy_piece in [WHITE, WHITE_KING])
                 ):
                     captured = True
+                    # Для авто-захвата не проверяем пустоту конечной точки
+                    # (она будет очищена при выполнении хода)
                 else:
-                    print(f"Invalid capture: enemy_piece={enemy_piece}, current_turn={self.current_turn}")
+                    print(f"Invalid capture: no enemy piece")
                     return False
-            elif abs(dx) != 1 or abs(dy) != 1:
+                    
+            elif abs(dx) == 1 and abs(dy) == 1:
+                # Простой ход
+                if self.board[ty][tx] != EMPTY:
+                    print(f"Target not empty for simple move")
+                    return False
+                
+                expected_dy = -1 if self.current_turn == WHITE else 1
+                if dy != expected_dy:
+                    print(f"Invalid direction for simple move: dy={dy}, expected={expected_dy}")
+                    return False
+                    
+                if self.must_continue:
+                    print("Must capture, but tried simple move")
+                    return False
+                    
+                captured = False  # Сбрасываем captured для простого хода
+            else:
                 print(f"Invalid move distance: dx={dx}, dy={dy}")
                 return False
-            else:
-                expected_dy = -1 if self.current_turn == WHITE else 1  # Проверяем направление хода для обычных шашек
-                if dy != expected_dy:
-                    print(f"Invalid direction: dy={dy}, expected={expected_dy}")
-                    return False
 
+        # После проверки всей последовательности
         if self.must_continue and not captured:
-            print("Must continue capturing")
+            print("Must continue capturing, but no capture in move")
             return False
 
         print("Move is valid")
@@ -343,12 +522,13 @@ class CheckersGame:
         if not self.is_valid_move(move, player):
             raise HTTPException(status_code=400, detail="Недопустимый ход")
 
-        if self.last_move_by == player and not self.must_continue:  # проверка на дублирующий ход от того же игрока
+        if self.last_move_by == player and not self.must_continue:
             raise HTTPException(status_code=400, detail="Не ваш ход")
 
         sequence = move.sequence
         captured = False
-        turn_changed = False  # флаг для отслеживания смены хода
+        turn_changed = False
+        is_auto_capture = len(sequence) > 2  # Авто-захват если больше 2 точек в пути
 
         for i in range(len(sequence) - 1):
             fx, fy = sequence[i]
@@ -374,20 +554,36 @@ class CheckersGame:
                         elif captured_piece in [BLACK, BLACK_KING]:
                             self.eaten_black_pieces.append(captured_piece)
                         print(f"Captured piece {captured_piece} at ({mid_x},{mid_y})")
-                        break  # удаляем только одну шашку
+                        break
 
             self.promote_to_king(tx, ty)
 
-            if captured and self.can_continue_capture(tx, ty):
-                self.must_continue = True
-                self.last_moved_piece = (tx, ty)
-                print(f"Must continue capturing from ({tx},{ty})")
+            # ВАЖНОЕ ИЗМЕНЕНИЕ: при авто-захвате не проверяем can_continue после каждого шага
+            if is_auto_capture:
+                # При авто-захвате проверяем только после последнего шага
+                if i == len(sequence) - 2:  # Последний шаг
+                    if captured and self.can_continue_capture(tx, ty):
+                        self.must_continue = True
+                        self.last_moved_piece = (tx, ty)
+                        print(f"Must continue capturing from ({tx},{ty})")
+                    else:
+                        self.must_continue = False
+                        self.last_moved_piece = None
+                        self.current_turn = BLACK if self.current_turn == WHITE else WHITE
+                        turn_changed = True
+                        print(f"Turn switched to {self.current_turn}")
             else:
-                self.must_continue = False
-                self.last_moved_piece = None
-                self.current_turn = BLACK if self.current_turn == WHITE else WHITE
-                turn_changed = True  # ход сменился
-                print(f"Turn switched to {self.current_turn}")
+                # Обычный режим - проверяем после каждого захвата
+                if captured and self.can_continue_capture(tx, ty):
+                    self.must_continue = True
+                    self.last_moved_piece = (tx, ty)
+                    print(f"Must continue capturing from ({tx},{ty})")
+                else:
+                    self.must_continue = False
+                    self.last_moved_piece = None
+                    self.current_turn = BLACK if self.current_turn == WHITE else WHITE
+                    turn_changed = True
+                    print(f"Turn switched to {self.current_turn}")
 
         self.last_move_by = player
         print(f"Move completed by {player}, new turn: {self.current_turn}")
@@ -397,19 +593,33 @@ class CheckersGame:
             self.game_ended = True
             print(f"Game ended, winner: {winner}")
 
-        self.cancel_timer()# отменяем существующий таймер
+        self.cancel_timer()
 
         return winner
 
     def can_continue_capture(self, x, y):
         piece = self.board[y][x]
         if piece not in [WHITE_KING, BLACK_KING]:
-            return any(
-                self.is_valid_move(Move(sequence=[(x, y), (x + dx * 2, y + dy * 2)]),
-                                self.white_name if self.current_turn == WHITE else self.black_name)
-                for dx, dy in [(-1, -1), (-1, 1), (1, -1), (1, 1)]
-            )
+            # Для простой шашки проверяем все 4 направления
+            for dx, dy in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                mid_x, mid_y = x + dx, y + dy
+                land_x, land_y = x + dx * 2, y + dy * 2
+                
+                if (0 <= land_x < BOARD_SIZE and 0 <= land_y < BOARD_SIZE and
+                    0 <= mid_x < BOARD_SIZE and 0 <= mid_y < BOARD_SIZE):
+                    
+                    mid_piece = self.board[mid_y][mid_x]
+                    land_cell = self.board[land_y][land_x]
+                    
+                    # Проверяем: в середине враг, а целевая клетка пуста
+                    if (land_cell == EMPTY and 
+                        mid_piece != EMPTY and
+                        ((self.current_turn == WHITE and mid_piece in [BLACK, BLACK_KING]) or
+                        (self.current_turn == BLACK and mid_piece in [WHITE, WHITE_KING]))):
+                        return True
+            return False
         else:
+            # Для дамки
             directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
             for dx, dy in directions:
                 k = 1
@@ -418,13 +628,19 @@ class CheckersGame:
                     check_y = y + k * dy
                     if not (0 <= check_x < BOARD_SIZE and 0 <= check_y < BOARD_SIZE):
                         break
+                    
                     if self.board[check_y][check_x] != EMPTY:
-                        if self._is_opponent(self.board[check_y][check_x], piece):
-                            jump_x = x + (k + 1) * dx
-                            jump_y = y + (k + 1) * dy
-                            if (0 <= jump_x < BOARD_SIZE and 0 <= jump_y < BOARD_SIZE and
-                                    self.board[jump_y][jump_x] == EMPTY):
-                                return True
+                        # Проверяем, враг ли это
+                        if ((self.current_turn == WHITE and self.board[check_y][check_x] in [BLACK, BLACK_KING]) or
+                            (self.current_turn == BLACK and self.board[check_y][check_x] in [WHITE, WHITE_KING])):
+                            # Враг найден, ищем место для приземления
+                            for m in range(k + 1, BOARD_SIZE):
+                                jump_x = x + m * dx
+                                jump_y = y + m * dy
+                                if not (0 <= jump_x < BOARD_SIZE and 0 <= jump_y < BOARD_SIZE):
+                                    break
+                                if self.board[jump_y][jump_x] == EMPTY:
+                                    return True
                         break  # любая фигура на пути блокирует направление
                     k += 1
             return False
@@ -572,12 +788,13 @@ async def create_room(sid, data):
     username = data.get('username')
     token = data.get('token')
     mode = data.get('mode', 'classic')  # получаем режим игры, по умолчанию классический
+    auto_capture = data.get('auto_capture', False)
     print(f"Create room request from {username} with token {token[:10]}... mode: {mode}")
 
     try:
         current_user = user_manager.check_token(token)  # проверяем токен
         game_id = secrets.token_hex(8)
-        games[game_id] = CheckersGame(mode=mode)  # передаём режим в конструктор
+        games[game_id] = CheckersGame(mode=mode, auto_capture=auto_capture)  # передаём режим в конструктор
         games[game_id].white_name = current_user
         connections[game_id] = {'white': sid, 'black': None}
         await sio.enter_room(sid, game_id)  # добавляем белого игрока в комнату
@@ -588,7 +805,8 @@ async def create_room(sid, data):
             'name': f'Комната {current_user}',
             'players': 1,
             'status': 'waiting',
-            'mode': mode  # добавляем режим в информацию о комнате
+            'mode': mode,  # добавляем режим в информацию о комнате
+            'auto_capture': auto_capture
         }, to=sid)  # отправляем уведомление создателю комнаты
         print(f"Room created event sent to sid: {sid}")
 
@@ -598,7 +816,8 @@ async def create_room(sid, data):
                 'name': f'Комната {game.white_name}',
                 'players': 1 if not game.black_name else 2,
                 'status': 'waiting' if not game.black_name else 'playing',
-                'mode': game.mode  # добавляем режим в список комнат
+                'mode': game.mode,  # добавляем режим в список комнат
+                'auto_capture': game.auto_capture
             }
             for gid, game in games.items()
             if not game.black_name and not game.game_ended
@@ -649,7 +868,8 @@ async def join_game(sid, data):
             'eaten_white_pieces': game.eaten_white_pieces,
             'eaten_black_pieces': game.eaten_black_pieces,
             'game_ended': game.game_ended,
-            'mode': game.mode  # добавляем режим игры
+            'mode': game.mode,  # добавляем режим игры
+            'auto_capture': game.auto_capture 
         }, to=sid)  # отправляем напрямую чёрному игроку
         if connections[game_id].get('white'):
             board_for_white = game.get_board('white')
@@ -667,7 +887,8 @@ async def join_game(sid, data):
                 'eaten_white_pieces': game.eaten_white_pieces,
                 'eaten_black_pieces': game.eaten_black_pieces,
                 'game_ended': game.game_ended,
-                'mode': game.mode  # добавляем режим игры
+                'mode': game.mode,  # добавляем режим игры
+                'auto_capture': game.auto_capture 
             }, to=connections[game_id]['white'])
         await sio.emit('playerJoined', {'username': username}, room=game_id)  # уведомляем о присоединении
         print(f"Game joined event sent to room: {game_id}")
@@ -1060,3 +1281,120 @@ async def request_password_reset(data: PasswordResetRequest):  # запрос с
 @app.post("/resetPassword")
 async def reset_password(data: PasswordReset):  # сброс пароля
     return user_manager.reset_password(data.reset_token, data.new_password)
+
+@app.post("/get_capture_paths")
+async def get_capture_paths(data: CapturePathRequest, current_user: str = Depends(token_checker)):
+    """Получает все возможные пути множественного захвата для фигуры"""
+    game_id = data.game_id
+    
+    if game_id not in games:
+        raise HTTPException(status_code=404, detail="Игра не найдена")
+    
+    game = games[game_id]
+    
+    if current_user not in (game.white_name, game.black_name):
+        raise HTTPException(status_code=403, detail="Вы не участник этой игры")
+    
+    player_color = 'white' if current_user == game.white_name else 'black'
+    if (player_color == 'white' and game.current_turn != WHITE) or \
+       (player_color == 'black' and game.current_turn != BLACK):
+        raise HTTPException(status_code=400, detail="Сейчас не ваш ход")
+    
+    x, y = data.piece_x, data.piece_y
+    
+    piece = game.board[y][x]
+    if player_color == 'white' and piece not in [WHITE, WHITE_KING]:
+        raise HTTPException(status_code=400, detail="Это не ваша фигура")
+    elif player_color == 'black' and piece not in [BLACK, BLACK_KING]:
+        raise HTTPException(status_code=400, detail="Это не ваша фигура")
+    
+    if game.must_continue and game.last_moved_piece:
+        if (x, y) != game.last_moved_piece:
+            raise HTTPException(status_code=400, detail="Нужно продолжить захват последней фигурой")
+    
+    finder = CapturePathFinder(game.board, game.current_turn)
+    paths = finder.find_all_capture_paths(x, y)
+    
+    # Возвращаем пути как есть (в серверных координатах)
+    # Клиент сам сконвертирует для отображения
+    return {
+        "paths": paths,
+        "piece_x": data.piece_x,
+        "piece_y": data.piece_y,
+        "player_color": player_color
+    }
+
+
+@sio.on('get_capture_paths')
+async def get_capture_paths_socket(sid, data):
+    """Получает все возможные пути множественного захвата через сокет"""
+    game_id = data.get('game_id')
+    token = data.get('token')
+    piece_x = data.get('piece_x')
+    piece_y = data.get('piece_y')
+    
+    if not game_id or game_id not in games:
+        await sio.emit('game_error', {'message': 'Game not found'}, to=sid)
+        return
+    
+    try:
+        username = user_manager.check_token(token)
+        game = games[game_id]
+        
+        # Определяем цвет игрока
+        if connections[game_id].get('white') == sid:
+            player_color = 'white'
+            if game.white_name != username:
+                await sio.emit('game_error', {'message': 'Invalid user'}, to=sid)
+                return
+        elif connections[game_id].get('black') == sid:
+            player_color = 'black'
+            if game.black_name != username:
+                await sio.emit('game_error', {'message': 'Invalid user'}, to=sid)
+                return
+        else:
+            await sio.emit('game_error', {'message': 'Not a player'}, to=sid)
+            return
+        
+        # Проверяем очередь хода
+        if (player_color == 'white' and game.current_turn != WHITE) or \
+           (player_color == 'black' and game.current_turn != BLACK):
+            await sio.emit('game_error', {'message': 'Not your turn'}, to=sid)
+            return
+        
+        # Проверяем, что фигура принадлежит игроку
+        piece = game.board[piece_y][piece_x]
+        if player_color == 'white' and piece not in [WHITE, WHITE_KING]:
+            await sio.emit('capture_paths_result', {'paths': [], 'error': 'Not your piece'}, to=sid)
+            return
+        elif player_color == 'black' and piece not in [BLACK, BLACK_KING]:
+            await sio.emit('capture_paths_result', {'paths': [], 'error': 'Not your piece'}, to=sid)
+            return
+        
+        # Если нужно обязательно продолжать захват
+        if game.must_continue and game.last_moved_piece:
+            if (piece_x, piece_y) != game.last_moved_piece:
+                await sio.emit('capture_paths_result', {'paths': [], 'error': 'Must continue with last piece'}, to=sid)
+                return
+        
+        finder = CapturePathFinder(game.board, game.current_turn)
+        paths = finder.find_all_capture_paths(piece_x, piece_y)
+        
+        # Конвертируем координаты для игрока
+        if player_color == 'black':
+            converted_paths = []
+            for path in paths:
+                converted_path = [(7 - px, 7 - py) for px, py in path]
+                converted_paths.append(converted_path)
+            paths = converted_paths
+        
+        await sio.emit('capture_paths_result', {
+            'paths': paths,
+            'piece_x': piece_x,
+            'piece_y': piece_y
+        }, to=sid)
+        
+    except HTTPException as e:
+        await sio.emit('capture_paths_result', {'paths': [], 'error': str(e.detail)}, to=sid)
+    except Exception as e:
+        await sio.emit('capture_paths_result', {'paths': [], 'error': str(e)}, to=sid)
